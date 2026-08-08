@@ -8,6 +8,7 @@ module spi_tx(
     input  logic        spi_tx_start,
     input  logic        spi_tx_fifo_empty,
     input  logic        spi_tx_cs,
+    output logic        spi_tx_fifo_read_en,
     output logic        spi_tx_ready,
     output logic        spi_tx_mosi);
 
@@ -19,7 +20,6 @@ module spi_tx(
     idle  - initial state, waiting for spi_tx_start = 1
     check - checking if tx_fifo has data
     load  - loading data from tx_fifo to data_reg
-    ready - setting ready flag to master_ctrl
     prep  - waiting for spi_tx_cs to send msb before first edge of spi_tx_sclk
     tran  - waiting for first spi_tx_sclk edge and sending data data
 */
@@ -28,11 +28,12 @@ module spi_tx(
     always_comb begin
         case (state)
             idle    : next = (spi_tx_start) ? check : idle;
-            check   : next = (spi_tx_stop)  ? idle  : (spi_tx_fifo_empty)? load : check;
-            load    : next = (spi_tx_stop)  ? idle  : ready;
-            ready   : next = (spi_tx_stop)  ? idle  : prep;
-            prep    : next = (spi_tx_stop)  ? idle  : (spi_tx_cs)        ? prep : trans;
-            trans   : next = (spi_tx_stop or (cnt_reg == 5'd31))  ? idle : trans;
+            check   : next = (spi_tx_stop)  ? idle  : (spi_tx_fifo_empty) ? load : check;
+            load    : next = (spi_tx_stop)  ? idle  : prep;
+            //ready   : next = (spi_tx_stop)  ? idle  : prep;
+            prep    : next = (spi_tx_stop)  ? idle  : (spi_tx_cs)         ? prep : trans;
+            trans   : next = (spi_tx_stop)  ? idle  : (cnt_reg == 5'd31)  ? (spi_tx_start) ? check : idle : trans;
+            //trans   : next = (spi_tx_stop or (cnt_reg == 5'd31))  ? idle : trans;
             default : next = idle;
         endcase
 
@@ -42,17 +43,17 @@ module spi_tx(
 //region states
     always_ff @(posedge spi_tx_ref_clk) begin
         if (spi_tx_rstn) begin
-            state <= idle;
-            cnt_reg <=  'h0;
+            state    <= idle;
+            cnt_reg  <= 'h0;
             data_reg <= 'h0;
         end
         else if (!spi_tx_start) begin  //transmission is stopped, reset to idle state, reset cnt_reg
-            state <= idle;
+            state   <= idle;
             cnt_reg <= 'h0;
         end
         else if (spi_tx_clear) begin   //clear signal is set, reset to idle state, clear data
-            state <= idle;
-            cnt_reg <=  'h0;
+            state    <= idle;
+            cnt_reg  <= 'h0;
             data_reg <= 'h0;
         end
 
@@ -60,12 +61,23 @@ module spi_tx(
             state <= next;
             if (state == load) begin
                 data_reg <= spi_tx_data;
-                cnt_reg <= 'h0;
+                cnt_reg  <= 'h0;
             end
         end
     end
 //endregion
 //region output_logic
+    always_ff @(posedge spi_tx_ref_clk) begin //setting spi_tx_ready and spi_tx_fifo_read_en for one spi_tx_ref_clk cycle
+        if (state == check) begin
+            spi_tx_fifo_read_en <= 1'b1;
+        end
+        else if (state == prep) begin    //spi_tx_ready can be set for more than one spi_tx_ref_clk cycle, because spi_rx_ready can be set later
+        end
+        else begin
+            spi_tx_ready        <= 1'b0;
+            spi_tx_fifo_read_en <= 1'b0;
+        end
+    end
 
     always_ff @(posedge spi_tx_sclk) begin                  //counting spi_tx_sclk edges
         if (state == trans) begin
@@ -75,6 +87,7 @@ module spi_tx(
             cnt_reg <= cnt_reg;
         end
     end
+
     always_ff @(negedge spi_tx_sclk) begin
         if ((state == prep) and (!spi_tx_cs)) begin            //send msb before first edge of spi_tx_sclk
             spi_tx_mosi <= data_reg[31];
